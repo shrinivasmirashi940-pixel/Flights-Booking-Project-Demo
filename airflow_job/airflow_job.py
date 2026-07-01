@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import uuid
 from airflow import DAG
-from airflow.providers.amazon.aws.operators.emr_serverless import EmrServerlessStartJobRunOperator
+from airflow.operators.bash import BashOperator
 from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.models import Variable
 
@@ -18,7 +18,7 @@ default_args = {
 with DAG(
     dag_id="flight_booking_emr_glue_dag",
     default_args=default_args,
-    schedule=None,  # Trigger manually or on-demand
+    schedule=None,
     catchup=False,
 ) as dag:
 
@@ -51,38 +51,37 @@ with DAG(
         mode="poke",
     )
 
-    # Task 2: Submit PySpark job to EMR Serverless
-    spark_job = EmrServerlessStartJobRunOperator(
+    # Task 2: Submit EMR Serverless job via AWS CLI
+    spark_job = BashOperator(
         task_id="run_spark_job_on_emr_serverless",
-        application_id=emr_application_id,
-        execution_role_arn=f"arn:aws:iam::{aws_account_id}:role/EMRServerlessExecutionRole",
-        job_driver={
-            "sparkSubmit": {
-                "entryPoint": f"s3://{s3_bucket}/flight-booking-analysis/spark-job/spark_transformation_job.py",
-                "entryPointArguments": [
-                    f"--env={env}",
-                    f"--s3_bucket={s3_bucket}",
-                    f"--glue_database={glue_database}",
-                    f"--transformed_table={transformed_table}",
-                    f"--route_insights_table={route_insights_table}",
-                    f"--origin_insights_table={origin_insights_table}",
-                ],
-                "sparkSubmitParameters": (
-                    "--conf spark.hadoop.hive.metastore.client.factory.class="
-                    "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory "
-                    "--conf spark.sql.catalogImplementation=hive"
-                ),
-            }
-        },
-        configuration_overrides={
-            "monitoringConfiguration": {
-                "s3MonitoringConfiguration": {
-                    "logUri": f"s3://{s3_bucket}/flight-booking-analysis/emr-logs/"
+        bash_command="""
+        aws emr-serverless start-job-run \
+            --application-id {{ var.value.emr_application_id }} \
+            --execution-role-arn arn:aws:iam::{{ var.value.aws_account_id }}:role/EMRServerlessExecutionRole \
+            --region {{ var.value.aws_region }} \
+            --name {{ run_id }} \
+            --job-driver '{
+                "sparkSubmit": {
+                    "entryPoint": "s3://{{ var.value.s3_bucket }}/flight-booking-analysis/spark-job/spark_transformation_job.py",
+                    "entryPointArguments": [
+                        "--env={{ var.value.env }}",
+                        "--s3_bucket={{ var.value.s3_bucket }}",
+                        "--glue_database={{ var.value.glue_database }}",
+                        "--transformed_table=transformed_flight_data_{{ var.value.env }}",
+                        "--route_insights_table=route_insights_{{ var.value.env }}",
+                        "--origin_insights_table=origin_insights_{{ var.value.env }}"
+                    ],
+                    "sparkSubmitParameters": "--conf spark.hadoop.hive.metastore.client.factory.class=com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory --conf spark.sql.catalogImplementation=hive"
                 }
-            }
-        },
-        aws_conn_id="aws_default",
-        name=job_run_name,
+            }' \
+            --configuration-overrides '{
+                "monitoringConfiguration": {
+                    "s3MonitoringConfiguration": {
+                        "logUri": "s3://{{ var.value.s3_bucket }}/flight-booking-analysis/emr-logs/"
+                    }
+                }
+            }'
+        """,
     )
 
     # Task Dependencies
