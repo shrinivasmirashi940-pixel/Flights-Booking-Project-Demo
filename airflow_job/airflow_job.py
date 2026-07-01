@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import uuid
 from airflow import DAG
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobRunOperator
+from airflow.providers.amazon.aws.operators.emr_serverless import EmrServerlessStartJobRunOperator
 from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.models import Variable
 
