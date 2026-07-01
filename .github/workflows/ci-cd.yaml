@@ -1,0 +1,117 @@
+name: Flight Booking CICD - AWS
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # DEV: runs when code is pushed to the `dev` branch
+  # ─────────────────────────────────────────────────────────────
+  upload-to-dev:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Authenticate to AWS using OIDC (recommended) or Access Keys
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Upload variables.json to the MWAA DEV S3 bucket
+      - name: Upload Variables JSON to S3 (DEV)
+        run: |
+          aws s3 cp variables/dev/variables.json \
+            s3://${{ secrets.MWAA_DEV_BUCKET }}/dags/variables/variables.json
+
+      # Import variables into MWAA DEV environment via CLI
+      - name: Import Variables into MWAA DEV
+        run: |
+          aws mwaa create-cli-token \
+            --name ${{ secrets.MWAA_DEV_ENV_NAME }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --query 'CliToken' --output text > /tmp/cli_token.txt
+
+          CLI_TOKEN=$(cat /tmp/cli_token.txt)
+          WEB_SERVER_HOSTNAME=$(aws mwaa get-environment \
+            --name ${{ secrets.MWAA_DEV_ENV_NAME }} \
+            --query 'Environment.WebserverUrl' --output text)
+
+          curl --request POST \
+            "https://${WEB_SERVER_HOSTNAME}/aws_mwaa/cli" \
+            --header "Authorization: Bearer ${CLI_TOKEN}" \
+            --header "Content-Type: text/plain" \
+            --data "variables import /usr/local/airflow/dags/variables/variables.json"
+
+      # Upload Spark job to DEV data S3 bucket
+      - name: Upload Spark Job to S3 (DEV)
+        run: |
+          aws s3 cp spark_job/spark_transformation_job.py \
+            s3://${{ secrets.S3_DEV_BUCKET }}/flight-booking-analysis/spark-job/spark_transformation_job.py
+
+      # Upload the Airflow DAG to MWAA DEV dags folder
+      - name: Upload Airflow DAG to MWAA DEV
+        run: |
+          aws s3 cp airflow_job/airflow_job.py \
+            s3://${{ secrets.MWAA_DEV_BUCKET }}/dags/airflow_job.py
+
+  # ─────────────────────────────────────────────────────────────
+  # PROD: runs when code is pushed/merged to `main`
+  # ─────────────────────────────────────────────────────────────
+  upload-to-prod:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Upload variables.json to the MWAA PROD S3 bucket
+      - name: Upload Variables JSON to S3 (PROD)
+        run: |
+          aws s3 cp variables/prod/variables.json \
+            s3://${{ secrets.MWAA_PROD_BUCKET }}/dags/variables/variables.json
+
+      # Import variables into MWAA PROD environment
+      - name: Import Variables into MWAA PROD
+        run: |
+          CLI_TOKEN=$(aws mwaa create-cli-token \
+            --name ${{ secrets.MWAA_PROD_ENV_NAME }} \
+            --query 'CliToken' --output text)
+
+          WEB_SERVER_HOSTNAME=$(aws mwaa get-environment \
+            --name ${{ secrets.MWAA_PROD_ENV_NAME }} \
+            --query 'Environment.WebserverUrl' --output text)
+
+          curl --request POST \
+            "https://${WEB_SERVER_HOSTNAME}/aws_mwaa/cli" \
+            --header "Authorization: Bearer ${CLI_TOKEN}" \
+            --header "Content-Type: text/plain" \
+            --data "variables import /usr/local/airflow/dags/variables/variables.json"
+
+      # Upload Spark job to PROD data S3 bucket
+      - name: Upload Spark Job to S3 (PROD)
+        run: |
+          aws s3 cp spark_job/spark_transformation_job.py \
+            s3://${{ secrets.S3_PROD_BUCKET }}/flight-booking-analysis/spark-job/spark_transformation_job.py
+
+      # Upload the Airflow DAG to MWAA PROD dags folder
+      - name: Upload Airflow DAG to MWAA PROD
+        run: |
+          aws s3 cp airflow_job/airflow_job.py \
+            s3://${{ secrets.MWAA_PROD_BUCKET }}/dags/airflow_job.py
